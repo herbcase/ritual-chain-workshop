@@ -1,57 +1,81 @@
-# Sample Hardhat 3 Project (`node:test` and `viem`)
+# Privacy-Preserving AI Bounty Judge
 
-This project showcases a Hardhat 3 project using the native Node.js test runner (`node:test`) and the `viem` library for Ethereum interactions.
+This submission updates the workshop `AIJudge` contract from public answer submissions to a commit-reveal bounty flow. The goal is to keep answers hidden during the submission phase so later participants cannot copy earlier ideas before judging.
 
-To learn more about Hardhat 3, please visit the [Getting Started guide](https://hardhat.org/docs/getting-started#getting-started-with-hardhat-3). To share your feedback, join our [Hardhat 3](https://hardhat.org/hardhat3-telegram-group) Telegram group or [open an issue](https://github.com/NomicFoundation/hardhat/issues/new) in our GitHub issue tracker.
+## Lifecycle
 
-## Project Overview
+1. The bounty owner creates a bounty with a title, rubric, reward, submission deadline, and reveal deadline.
+2. Before the submission deadline, each participant calls `submitCommitment(uint256 bountyId, bytes32 commitment)`.
+3. The commitment is computed as `keccak256(abi.encodePacked(answer, salt, msg.sender, bountyId))`.
+4. The plaintext answer and salt stay off-chain during the submission phase.
+5. After the submission deadline and before the reveal deadline, the participant calls `revealAnswer(uint256 bountyId, string calldata answer, bytes32 salt)`.
+6. The contract recomputes the commitment and stores the answer only if the reveal matches the original commitment.
+7. After the reveal deadline, the owner calls `judgeAll(uint256 bountyId, bytes calldata llmInput)`.
+8. Ritual AI receives the revealed submissions in one batch judging request. Unrevealed commitments are not eligible.
+9. After judging is complete, the owner calls `finalizeWinner(uint256 bountyId, uint256 winnerIndex)` and the contract pays the reward to one revealed submission.
 
-This example project includes:
+## Contract Rules Implemented
 
-- A simple Hardhat configuration file.
-- Foundry-compatible Solidity unit tests.
-- TypeScript integration tests using [`node:test`](nodejs.org/api/test.html), the new Node.js native test runner, and [`viem`](https://viem.sh/).
-- Examples demonstrating how to connect to different types of networks, including locally simulating OP mainnet.
+- Commitments can only be submitted before `submissionDeadline`.
+- Answers can only be revealed after `submissionDeadline` and before `revealDeadline`.
+- Each address can submit only one commitment per bounty.
+- A reveal is valid only when the recomputed commitment matches the stored commitment.
+- Unrevealed submissions remain ineligible for judging and payout.
+- The owner can judge only after the reveal deadline.
+- The owner can finalize only after judging is complete.
+- The winner index must point to a revealed submission.
+- The reward is set to zero before the external payment call to avoid double payout.
 
-## Usage
+## Test Plan
 
-### Running Tests
+The required test coverage should include these cases:
 
-To run all the tests in the project, execute the following command:
+1. Create bounty succeeds when the reward is nonzero, `submissionDeadline` is in the future, and `revealDeadline` is after `submissionDeadline`.
+2. Create bounty reverts when there is no reward.
+3. Create bounty reverts when the reveal deadline is before or equal to the submission deadline.
+4. `submitCommitment` succeeds before the submission deadline and emits `CommitmentSubmitted`.
+5. `submitCommitment` reverts after the submission deadline.
+6. `submitCommitment` reverts when the same participant tries to commit twice for the same bounty.
+7. `revealAnswer` reverts before the submission deadline.
+8. `revealAnswer` succeeds during the reveal phase with the correct answer, salt, submitter, and bounty id.
+9. `revealAnswer` reverts with the wrong salt, wrong answer, or wrong caller.
+10. `revealAnswer` reverts after the reveal deadline.
+11. `judgeAll` reverts before the reveal deadline.
+12. `judgeAll` reverts if no submission was validly revealed.
+13. `finalizeWinner` reverts before judging is complete.
+14. `finalizeWinner` reverts if `winnerIndex` points to an unrevealed submission.
+15. `finalizeWinner` pays exactly one revealed winner and cannot be called a second time.
 
-```shell
-npx hardhat test
+## Architecture Note: Commit-Reveal vs Ritual-Native Hidden Submissions
+
+The required commit-reveal track is portable across EVM chains because the chain only needs to store hashes during the submission phase and verify reveals later. Its main limitation is that plaintext answers become public during the reveal phase, before `judgeAll()` runs. This still prevents copying during the original submission window, but it does not fully hide answers until AI judging is complete.
+
+A Ritual-native advanced design can keep plaintext answers hidden longer. Participants encrypt their answers for a Ritual TEE executor or a Ritual privacy/key flow and submit either encrypted blobs or references to encrypted off-chain objects. On-chain storage should contain compact data such as submitter addresses, ciphertext references, ciphertext hashes, and status flags rather than large plaintext answers. During `judgeAll()`, the TEE workflow privately decrypts all eligible submissions, builds one batch prompt, and sends all submissions to the LLM together. The LLM should not be called once per answer because that makes comparative judging weaker and creates inconsistent context between submissions.
+
+Plaintext answers exist only on the participant device before submission and inside the Ritual-backed private execution environment during judging. Other participants and public chain observers should see only commitments, encrypted references, hashes, and final results. After judging, the system can reveal all answers together by publishing an off-chain bundle such as `ipfs://...` plus `revealedAnswersHash` on-chain. The contract can commit to the final bundle by storing the hash, while the owner still finalizes the payout after reviewing the AI recommendation.
+
+```mermaid
+flowchart LR
+    A["Participant answer"] --> B["Encrypt for Ritual TEE"]
+    B --> C["Store ciphertext or off-chain reference"]
+    C --> D["Contract stores reference and hash"]
+    D --> E["judgeAll after deadline"]
+    E --> F["TEE decrypts all submissions privately"]
+    F --> G["One batch LLM judging request"]
+    G --> H["AI returns ranking and winner recommendation"]
+    H --> I["Publish final answer bundle and hash"]
+    I --> J["Owner finalizes one winner"]
 ```
 
-You can also selectively run the Solidity or `node:test` tests:
+## Reflection
+
+In a bounty system, public data should include the bounty rules, reward amount, deadlines, judging rubric, participant commitments, final winner, and payout transaction. Submissions should stay hidden while participants are still competing so that later entrants cannot copy or slightly improve earlier answers. Salts, plaintext answers, encrypted storage credentials, and any private judging inputs should remain hidden until the protocol reaches the intended reveal point. AI should help compare submissions against the rubric, summarize tradeoffs, and recommend a ranking because it can review many answers consistently in one batch. A human owner should still make the final payout decision because the owner is responsible for interpreting edge cases, checking whether the AI result is sensible, and handling disputes. The contract should enforce objective rules such as deadlines, valid reveals, eligibility, and one-time payout. Humans should decide policy and accountability, while AI should assist with evaluation rather than become the sole authority over funds.
+
+## Local Usage
+
+Install dependencies and run the Hardhat checks from the `hardhat` directory:
 
 ```shell
-npx hardhat test solidity
-npx hardhat test nodejs
-```
-
-### Make a deployment to Sepolia
-
-This project includes an example Ignition module to deploy the contract. You can deploy this module to a locally simulated chain or to Sepolia.
-
-To run the deployment to a local chain:
-
-```shell
-npx hardhat ignition deploy ignition/modules/Counter.ts
-```
-
-To run the deployment to Sepolia, you need an account with funds to send the transaction. The provided Hardhat configuration includes a Configuration Variable called `SEPOLIA_PRIVATE_KEY`, which you can use to set the private key of the account you want to use.
-
-You can set the `SEPOLIA_PRIVATE_KEY` variable using the `hardhat-keystore` plugin or by setting it as an environment variable.
-
-To set the `SEPOLIA_PRIVATE_KEY` config variable using `hardhat-keystore`:
-
-```shell
-npx hardhat keystore set SEPOLIA_PRIVATE_KEY
-```
-
-After setting the variable, you can run the deployment with the Sepolia network:
-
-```shell
-npx hardhat ignition deploy --network sepolia ignition/modules/Counter.ts
+pnpm install
+pnpm hardhat compile
 ```
