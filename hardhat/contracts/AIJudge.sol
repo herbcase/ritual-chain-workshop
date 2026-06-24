@@ -290,45 +290,6 @@ contract AIJudge is PrecompileConsumer {
         return keccak256(abi.encodePacked(answer, salt, submitter, bountyId));
     }
 
-    function getBounty(
-        uint256 bountyId
-    )
-        external
-        view
-        bountyExists(bountyId)
-        returns (
-            address owner,
-            string memory title,
-            string memory rubric,
-            uint256 reward,
-            uint256 submissionDeadline,
-            uint256 revealDeadline,
-            bool judged,
-            bool finalized,
-            uint256 submissionCount,
-            uint256 revealedCount,
-            uint256 winnerIndex,
-            bytes memory aiReview
-        )
-    {
-        Bounty storage bounty = bounties[bountyId];
-
-        return (
-            bounty.owner,
-            bounty.title,
-            bounty.rubric,
-            bounty.reward,
-            bounty.submissionDeadline,
-            bounty.revealDeadline,
-            bounty.judged,
-            bounty.finalized,
-            bounty.submissions.length,
-            _revealedCount(bounty),
-            bounty.winnerIndex,
-            bounty.aiReview
-        );
-    }
-
     function getBountyView(
         uint256 bountyId
     ) external view bountyExists(bountyId) returns (BountyView memory viewData) {
